@@ -274,12 +274,9 @@ def main():
         evening_passes = [p for p in visible_passes if p['time_category'] == 'Evening']
         morning_passes = [p for p in visible_passes if p['time_category'] == 'Morning']
         
-        # Convert azimuth to compass direction
+        # Convert azimuth to degrees only
         def az_to_compass(azimuth):
-            directions = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
-                         "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"]
-            idx = round(azimuth / 22.5) % 16
-            return f"{directions[idx]} ({azimuth:.0f}°)"
+            return f"{azimuth:.0f}°"
         
         def estimate_magnitude(satellite_name, max_elevation):
             """Estimate satellite magnitude based on type and elevation"""
@@ -311,10 +308,10 @@ def main():
                 
                 for pass_info in passes:
                     start_time_str = pass_info['start_time_local'].strftime("%H:%M")
-                    start_dir = az_to_compass(pass_info['start_az']).split()[0]  # Just direction letters
+                    start_dir = az_to_compass(pass_info['start_az'])  # Degrees only
                     
                     end_time_str = pass_info['end_time_local'].strftime("%H:%M")
-                    end_dir = az_to_compass(pass_info['end_az']).split()[0]
+                    end_dir = az_to_compass(pass_info['end_az'])
                     
                     max_elevation_str = f"{pass_info['max_elevation']:3.0f}°"
                     
@@ -337,7 +334,7 @@ def main():
         
         print(f"\nNote: Only passes with sun below -6° (civil twilight or darker) are shown.")
         print(f"Mag = estimated magnitude (lower/negative = brighter).")
-        print(f"Times shown in local timezone. Directions: N/NE/E/SE/S/SW/W/NW")
+        print(f"Times shown in local timezone. Directions shown as azimuth degrees (0°-360°).")
         
     except Exception as e:
         print(f"Error: {e}")

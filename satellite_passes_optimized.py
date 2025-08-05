@@ -117,9 +117,8 @@ class SatellitePassPredictor:
             return "Night"  # 0-4 and 23-24 hours
     
     def az_to_compass(self, azimuth):
-        """Convert azimuth to compass direction"""
-        idx = round(azimuth / 22.5) % 16
-        return self.directions[idx]
+        """Convert azimuth to degrees only"""
+        return f"{azimuth:.0f}°"
     
     def estimate_magnitude(self, satellite_name, max_elevation):
         """Estimate satellite magnitude based on type and elevation"""
@@ -309,8 +308,57 @@ class SatellitePassPredictor:
                             sun_elevation=sun_elev,
                             observer_dark=observer_dark,
                             potentially_visible=potentially_visible,
-                            duration=(j - pass_start_idx) * 10  # minutes (10 min intervals for coarse detection)
+                            duration=(j - pass_start_idx) * 3  # minutes (3 min intervals)
                         ))
+        
+        # Handle case where pass is still in progress at end of time range
+        if in_pass and pass_start_idx is not None:
+            j = len(above_horizon)
+            pass_elevations = alt_degrees.degrees[pass_start_idx:j]
+            max_elevation = np.max(pass_elevations)
+            
+            if max_elevation >= self.config.min_elevation:
+                max_idx = pass_start_idx + np.argmax(pass_elevations)
+                
+                start_time_utc = time_range[pass_start_idx]
+                end_time_utc = time_range[j-1]
+                max_time_utc = time_range[max_idx]
+                
+                start_time_local = start_time_utc.astimezone(self.config.local_tz)
+                end_time_local = end_time_utc.astimezone(self.config.local_tz)
+                max_time_local = max_time_utc.astimezone(self.config.local_tz)
+                
+                # Get sun elevation at pass time for visibility analysis
+                pass_time_skyfield = t_array[pass_start_idx]
+                sun_elev = self.get_sun_elevation(pass_time_skyfield)
+                
+                # Determine visibility - sun must be below -6° for good visibility
+                time_category = self.categorize_pass_time(start_time_local)
+                observer_dark = sun_elev < -6  # Civil twilight or darker required
+                # Allow visibility during evening, morning, and night hours with proper darkness
+                potentially_visible = (observer_dark and
+                                     time_category in ['Evening', 'Morning', 'Night'])
+                
+                passes.append(PassInfo(
+                    satellite=satellite.name,
+                    start_time=start_time_utc,
+                    start_time_local=start_time_local,
+                    start_az=az_degrees.degrees[pass_start_idx],
+                    start_alt=alt_degrees.degrees[pass_start_idx],
+                    max_time=max_time_utc,
+                    max_time_local=max_time_local,
+                    max_az=az_degrees.degrees[max_idx],
+                    max_elevation=max_elevation,
+                    end_time=end_time_utc,
+                    end_time_local=end_time_local,
+                    end_az=az_degrees.degrees[j-1],
+                    end_alt=alt_degrees.degrees[j-1],
+                    time_category=time_category,
+                    sun_elevation=sun_elev,
+                    observer_dark=observer_dark,
+                    potentially_visible=potentially_visible,
+                    duration=(j - pass_start_idx) * 3  # minutes (3 min intervals)
+                ))
         
         return passes
     
@@ -321,18 +369,18 @@ class SatellitePassPredictor:
         start_time = now
         end_time = now + timedelta(hours=self.config.days_ahead * 24)
         
-        # Create adaptive time array - coarser for initial detection, finer around passes
-        def create_adaptive_time_array(start_time, end_time, coarse_interval=10, fine_interval=3):
-            """Create adaptive time array with variable resolution"""
+        # Create time array with 3-minute intervals for accuracy
+        def create_time_array(start_time, end_time, interval=3):
+            """Create time array with consistent 3-minute intervals"""
             time_range = []
             current = start_time
             while current < end_time:
                 time_range.append(current)
-                current += timedelta(minutes=coarse_interval)
+                current += timedelta(minutes=interval)
             return time_range
         
         # Convert to Skyfield time objects
-        time_range = create_adaptive_time_array(start_time, end_time)
+        time_range = create_time_array(start_time, end_time)
         time_tuples = []
         for t in time_range:
             utc_t = t.astimezone(timezone.utc) if t.tzinfo else t
@@ -343,22 +391,18 @@ class SatellitePassPredictor:
         all_passes = []
         progress = ProgressTracker(len(satellites))
         
-        # Process satellites in batches to optimize memory usage
-        batch_size = 10
-        for i in range(0, len(satellites), batch_size):
-            batch = satellites[i:i+batch_size]
+        # Process satellites individually for accuracy
+        for sat_name, line1, line2 in satellites:
+            progress.update()
+            satellite = EarthSatellite(line1, line2, sat_name, self.ts)
             
-            for sat_name, line1, line2 in batch:
-                progress.update()
-                satellite = EarthSatellite(line1, line2, sat_name, self.ts)
+            try:
+                # Detect passes with 3-minute time sampling for accuracy
+                passes = self.detect_passes_adaptive(satellite, t_array, time_range)
+                all_passes.extend(passes)
                 
-                try:
-                    # Detect passes with coarse time sampling
-                    passes = self.detect_passes_adaptive(satellite, t_array, time_range)
-                    all_passes.extend(passes)
-                    
-                except Exception as e:
-                    continue
+            except Exception:
+                continue
         
         progress.finish()
         return all_passes
@@ -426,7 +470,7 @@ class SatellitePassPredictor:
             
             print(f"\nNote: Only passes with sun below -6° (civil twilight or darker) are shown.")
             print(f"Mag = estimated magnitude (lower/negative = brighter).")
-            print(f"Times shown in local timezone. Directions: N/NE/E/SE/S/SW/W/NW")
+            print(f"Times shown in local timezone. Directions shown as azimuth degrees (0°-360°).")
             
         except Exception as e:
             print(f"Error: {e}")
